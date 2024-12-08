@@ -1,14 +1,18 @@
-<?xml version='1.0' ?>
-
+<?xml version="1.0"?>
 <launch>
-    
-    <!-- robot_state_publisher -->
-    <node pkg="event_decoder" exec="event_decoder">
-        <param name="bag_file"  value="/home/arata22/record/sample"/>
-        <param name="debug"  value="true"/>
-        <param name="topic_name"  value="/event_camera/events"/>
-        <param name="h5_file"  value="outputs.h5"/>
-        <param name='batch_size' value='100000' />
-    </node>
+    <!-- Declare parameters with defaults -->
+    <arg name="bag_file" default="/home/arata22/record/sample"/>
+    <arg name="topic_name" default="/event_camera/events"/>
+    <arg name="debug" default="true"/>
+    <arg name="h5_file" default="outputs.h5"/>
+    <arg name="batch_size" default="100000"/>
 
+    <!-- robot_state_publisher -->
+    <node pkg="event_decoder" exec="event_decoder" name="event_decoder_node">
+        <param name="bag_file" value="$(var bag_file)" />
+        <param name="debug" value="$(var debug)" />
+        <param name="topic_name" value="$(var topic_name)" />
+        <param name="h5_file" value="$(var h5_file)" />
+        <param name="batch_size" value="$(var batch_size)" />
+    </node>
 </launch>

@@ -12,6 +12,7 @@
 #include <string>
 #include <H5Cpp.h>
 #include <chrono>
+#include <atomic>  // 追加
 
 // タイミング計測用
 using Clock = std::chrono::high_resolution_clock;
@@ -19,6 +20,7 @@ using Clock = std::chrono::high_resolution_clock;
 #define TIMER_START(label) auto label##_start = Clock::now();
 #define TIMER_END(label, message) \
     RCLCPP_INFO(this->get_logger(), "%s took %ld ms", message, std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - label##_start).count());
+
 class ProcessNode : public rclcpp::Node {
 public:
     ProcessNode(const rclcpp::NodeOptions &options)
@@ -30,7 +32,6 @@ public:
         this->declare_parameter<std::string>("h5_file", "output.h5");
         this->declare_parameter<bool>("debug", false);
         this->declare_parameter<int64_t>("batch_size", static_cast<int64_t>(1000));
-
 
         this->get_parameter("bag_file", bag_file_);
         this->get_parameter("topic_name", topic_name_);
@@ -51,7 +52,7 @@ public:
     }
 
     ~ProcessNode() {
-        stop_processing_ = true;
+        stop_processing_.store(true);  // atomic に設定
         if (event_reader_thread_.joinable()) {
             event_reader_thread_.join();
         }
@@ -109,9 +110,9 @@ private:
         MyProcessor processor(event_buffer_, buffer_mutex_);
 
         while (reader_->has_next()) {
-            TIMER_START(bag_read);
+            // TIMER_START(bag_read);  // タイマー削除
             auto bag_msg = reader_->read_next();
-            TIMER_END(bag_read, "Reading a message from bag file");
+            // TIMER_END(bag_read, "Reading a message from bag file");  // タイマー削除
 
             if (bag_msg->topic_name == topic_name_) {
                 auto event_msg = std::make_shared<event_camera_msgs::msg::EventPacket>();
@@ -126,19 +127,19 @@ private:
                     continue;
                 }
 
-                TIMER_START(decode);
+                // TIMER_START(decode);  // タイマー削除
                 decoder->decode(*event_msg, &processor);
-                TIMER_END(decode, "Decoding an event message");
+                // TIMER_END(decode, "Decoding an event message");  // タイマー削除
             }
         }
 
-        stop_processing_ = true;
+        stop_processing_.store(true);  // atomic に設定
     }
 
     void processBuffer() {
         std::vector<std::tuple<uint64_t, uint16_t, uint16_t, uint8_t>> batch;
 
-        while (!stop_processing_ || !event_buffer_.empty()) {
+        while (!stop_processing_.load() || !event_buffer_.empty()) {
             {
                 std::unique_lock<std::mutex> lock(buffer_mutex_);
                 while (!event_buffer_.empty() && batch.size() < batch_size_) {
@@ -148,18 +149,24 @@ private:
             }
 
             if (!batch.empty()) {
-                TIMER_START(h5_batch_write);
+                // TIMER_START(h5_batch_write);  // タイマー削除
                 saveBatchToHDF5(batch);
-                TIMER_END(h5_batch_write, "Writing batch to HDF5");
+                // TIMER_END(h5_batch_write, "Writing batch to HDF5");  // タイマー削除
                 batch.clear();
             } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
             }
 
             if (debug_) {
                 RCLCPP_INFO(this->get_logger(), "Buffer size: %zu", event_buffer_.size());
             }
         }
+
+        // バッファ処理が完了した後にノードをシャットダウン
+        if (debug_) {
+            RCLCPP_INFO(this->get_logger(), "Buffer processing completed. Shutting down node.");
+        }
+        rclcpp::shutdown();
     }
 
     void saveBatchToHDF5(const std::vector<std::tuple<uint64_t, uint16_t, uint16_t, uint8_t>> &batch) {
@@ -168,26 +175,43 @@ private:
                 createHDF5Dataset();
             }
 
-            hsize_t current_size[2] = {current_row_ + batch.size(), 4};
-            dataset_->extend(current_size);
+            hsize_t current_size[1] = {current_row_ + batch.size()};
+            timestamp_dataset_->extend(current_size);
+            x_dataset_->extend(current_size);
+            y_dataset_->extend(current_size);
+            polarity_dataset_->extend(current_size);
 
-            hsize_t offset[2] = {current_row_, 0};
-            hsize_t count[2] = {batch.size(), 4};
-            H5::DataSpace filespace = dataset_->getSpace();
+            hsize_t offset[1] = {current_row_};
+            hsize_t count[1] = {batch.size()};
+            H5::DataSpace filespace = timestamp_dataset_->getSpace();
             filespace.selectHyperslab(H5S_SELECT_SET, count, offset);
 
-            hsize_t dim[2] = {batch.size(), 4};
-            H5::DataSpace memspace(2, dim);
+            hsize_t dim[1] = {batch.size()};
+            H5::DataSpace memspace(1, dim);
 
-            std::vector<int64_t> flat_data;
+            // 各データ型に対応する配列
+            std::vector<int64_t> timestamps;  // int64_t型に変更
+            std::vector<uint16_t> x_coords;
+            std::vector<uint16_t> y_coords;
+            std::vector<uint8_t> polarities;
+
+            timestamps.reserve(batch.size());
+            x_coords.reserve(batch.size());
+            y_coords.reserve(batch.size());
+            polarities.reserve(batch.size());
+
             for (const auto &event : batch) {
-                flat_data.push_back(std::get<0>(event) / 1000);
-                flat_data.push_back(std::get<1>(event));
-                flat_data.push_back(std::get<2>(event));
-                flat_data.push_back(static_cast<int64_t>(std::get<3>(event)));
+                timestamps.push_back(static_cast<int64_t>(std::get<0>(event)) / 1000);  // ミリ秒に変換
+                x_coords.push_back(std::get<1>(event));
+                y_coords.push_back(std::get<2>(event));
+                polarities.push_back(std::get<3>(event));
             }
 
-            dataset_->write(flat_data.data(), H5::PredType::NATIVE_INT64, memspace, filespace);
+            // 各データを個別に保存
+            timestamp_dataset_->write(timestamps.data(), H5::PredType::NATIVE_INT64, memspace, filespace);
+            x_dataset_->write(x_coords.data(), H5::PredType::NATIVE_UINT16, memspace, filespace);
+            y_dataset_->write(y_coords.data(), H5::PredType::NATIVE_UINT16, memspace, filespace);
+            polarity_dataset_->write(polarities.data(), H5::PredType::NATIVE_UINT8, memspace, filespace);
 
             current_row_ += batch.size();
         } catch (const H5::Exception &err) {
@@ -196,21 +220,34 @@ private:
     }
 
     void createHDF5Dataset() {
-        hsize_t init_dims[2] = {0, 4};
-        hsize_t max_dims[2] = {H5S_UNLIMITED, 4};
-        H5::DataSpace dataspace(2, init_dims, max_dims);
+        // データセットの初期サイズを設定
+        hsize_t init_dims[1] = {0};  // 行数は最初0
+        hsize_t max_dims[1] = {H5S_UNLIMITED};  // 行数は無限
+        H5::DataSpace dataspace(1, init_dims, max_dims);
 
-        hsize_t chunk_dims[2] = {1024, 4};
+        hsize_t chunk_dims[1] = {1024};  // チャンクサイズ（バッチ単位で書き込む）
         H5::DSetCreatPropList prop;
-        prop.setChunk(2, chunk_dims);
-        prop.setDeflate(5);
+        prop.setChunk(1, chunk_dims);
+        prop.setDeflate(5);  // 圧縮レベル
 
-        dataset_ = std::make_unique<H5::DataSet>(
-            h5file_->createDataSet("events", H5::PredType::NATIVE_INT64, dataspace, prop));
+        // 各データ（timestamp, x, y, polarity）用のデータセットを個別に作成
+        timestamp_dataset_ = std::make_unique<H5::DataSet>(
+            h5file_->createDataSet("t", H5::PredType::NATIVE_INT64, dataspace, prop));
+        x_dataset_ = std::make_unique<H5::DataSet>(
+            h5file_->createDataSet("x", H5::PredType::NATIVE_UINT16, dataspace, prop));
+        y_dataset_ = std::make_unique<H5::DataSet>(
+            h5file_->createDataSet("y", H5::PredType::NATIVE_UINT16, dataspace, prop));
+        polarity_dataset_ = std::make_unique<H5::DataSet>(
+            h5file_->createDataSet("p", H5::PredType::NATIVE_UINT8, dataspace, prop));
 
         dataset_initialized_ = true;
         current_row_ = 0;
     }
+
+    std::unique_ptr<H5::DataSet> timestamp_dataset_;
+    std::unique_ptr<H5::DataSet> x_dataset_;
+    std::unique_ptr<H5::DataSet> y_dataset_;
+    std::unique_ptr<H5::DataSet> polarity_dataset_;
 
     std::string bag_file_;
     std::string topic_name_;
@@ -225,9 +262,8 @@ private:
     std::unique_ptr<H5::H5File> h5file_;
     std::thread event_reader_thread_;
     std::thread buffer_processor_thread_;
-    bool stop_processing_ = false;
+    std::atomic<bool> stop_processing_{false};  // 修正
 
-    std::unique_ptr<H5::DataSet> dataset_;
     bool dataset_initialized_ = false;
     hsize_t current_row_ = 0;
 
@@ -238,7 +274,8 @@ int main(int argc, char *argv[]) {
     rclcpp::init(argc, argv);
 
     auto options = rclcpp::NodeOptions();
-    rclcpp::spin(std::make_shared<ProcessNode>(options));
+    auto node = std::make_shared<ProcessNode>(options);
+    rclcpp::spin(node);
 
     rclcpp::shutdown();
     return 0;
