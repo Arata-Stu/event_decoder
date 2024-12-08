@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>event_decoder</name>
+  <version>0.0.0</version>
+  <description>TODO: Package description</description>
+  <maintainer email="ky.37f.9850@s.thers.ac.jp">arata22</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  
+  <depend>rclcpp</depend>
+  <depend>rosbag2_cpp</depend>
+  <depend>event_camera_msgs</depend>
+  <depend>event_camera_codecs</depend>
+  <depend>hdf5</depend>
+
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

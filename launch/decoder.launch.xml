@@ -1,0 +1,14 @@
+<?xml version='1.0' ?>
+
+<launch>
+    
+    <!-- robot_state_publisher -->
+    <node pkg="event_decoder" exec="event_decoder">
+        <param name="bag_file"  value="/home/arata22/record/sample"/>
+        <param name="debug"  value="true"/>
+        <param name="topic_name"  value="/event_camera/events"/>
+        <param name="h5_file"  value="outputs.h5"/>
+        <param name='batch_size' value='100000' />
+    </node>
+
+</launch>
