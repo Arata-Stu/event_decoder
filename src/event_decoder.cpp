@@ -12,7 +12,10 @@
 #include <string>
 #include <H5Cpp.h>
 #include <chrono>
-#include <atomic>  // 追加
+#include <atomic>  
+#include <filesystem> // C++17以降
+
+namespace fs = std::filesystem;
 
 // タイミング計測用
 using Clock = std::chrono::high_resolution_clock;
@@ -29,17 +32,28 @@ public:
         // パラメータの設定
         this->declare_parameter<std::string>("bag_file", "path/to/your_bag");
         this->declare_parameter<std::string>("topic_name", "/your_event_topic");
-        this->declare_parameter<std::string>("h5_file", "output.h5");
+        this->declare_parameter<std::string>("project_root", ""); // デフォルトは空
         this->declare_parameter<bool>("debug", false);
         this->declare_parameter<int64_t>("batch_size", static_cast<int64_t>(1000));
 
         this->get_parameter("bag_file", bag_file_);
         this->get_parameter("topic_name", topic_name_);
-        this->get_parameter("h5_file", h5_file_);
+        this->get_parameter("project_root", project_root_);
         this->get_parameter("debug", debug_);
         int64_t batch_size_int64;
         this->get_parameter("batch_size", batch_size_int64);
         batch_size_ = static_cast<size_t>(batch_size_int64);
+
+        try {
+            h5_file_ = generateHDF5OutputFileName(project_root_, bag_file_);
+        } catch (const std::exception &e) {
+            RCLCPP_ERROR(this->get_logger(), "Failed to generate HDF5 output file name: %s", e.what());
+            throw; // プロセスを停止する
+        }
+
+        if (debug_) {
+            RCLCPP_INFO(this->get_logger(), "HDF5 output file: %s", h5_file_.c_str());
+        }
 
         // HDF5ファイルの初期化
         h5file_ = std::make_unique<H5::H5File>(h5_file_, H5F_ACC_TRUNC);
@@ -50,6 +64,7 @@ public:
         // バッファの処理スレッドを開始
         buffer_processor_thread_ = std::thread([this]() { this->processBuffer(); });
     }
+
 
     ~ProcessNode() {
         stop_processing_.store(true);  // atomic に設定
@@ -89,6 +104,42 @@ private:
         std::queue<std::tuple<uint64_t, uint16_t, uint16_t, uint8_t>> &buffer_;
         std::mutex &mutex_;
     };
+
+    // 出力パス生成関数の修正
+    std::string generateHDF5OutputFileName(const std::string &project_root, const std::string &bag_file) {
+        try {
+            fs::path root_path(project_root);
+            if (project_root.empty()) {
+                throw std::runtime_error("Project root is not set.");
+            }
+
+            // バッグファイルの名前を取得
+            fs::path bag_path(bag_file);
+            std::string bag_name = bag_path.stem().string(); // ファイル名（拡張子なし）
+
+            // バッグファイル名が空の場合、ディレクトリ名を使用
+            if (bag_name.empty()) {
+                bag_name = bag_path.parent_path().filename().string(); // 親ディレクトリ名
+            }
+
+            if (bag_name.empty()) {
+                throw std::runtime_error("Failed to generate a valid name from bag file path.");
+            }
+
+            // HDF5ファイルの保存先ディレクトリを構築
+            fs::path output_dir = root_path / "output" / "events";
+            fs::create_directories(output_dir);  // 必要に応じてディレクトリ作成
+
+            // 出力ファイル名
+            fs::path h5_file_path = output_dir / (bag_name + "_events.h5");
+            return h5_file_path.string();
+        } catch (const std::exception &e) {
+            throw std::runtime_error("Error generating HDF5 output file name: " + std::string(e.what()));
+        }
+    }
+
+
+
 
     void openBag() {
         rosbag2_storage::StorageOptions storage_options;
@@ -260,6 +311,8 @@ private:
 
     std::string bag_file_;
     std::string topic_name_;
+    std::string project_root_;
+    
     std::string h5_file_;
     bool debug_;
     size_t batch_size_;

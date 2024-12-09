@@ -4,7 +4,7 @@
     <arg name="bag_file" default="/home/arata22/record/sample"/>
     <arg name="topic_name" default="/event_camera/events"/>
     <arg name="debug" default="true"/>
-    <arg name="h5_file" default="outputs.h5"/>
+    <arg name="project_root" default=""/>
     <arg name="batch_size" default="100000"/>
 
     <!-- robot_state_publisher -->
@@ -12,7 +12,7 @@
         <param name="bag_file" value="$(var bag_file)" />
         <param name="debug" value="$(var debug)" />
         <param name="topic_name" value="$(var topic_name)" />
-        <param name="h5_file" value="$(var h5_file)" />
+        <param name="project_root" value="$(var project_root)" />
         <param name="batch_size" value="$(var batch_size)" />
     </node>
 </launch>
