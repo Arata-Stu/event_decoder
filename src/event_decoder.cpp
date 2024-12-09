@@ -175,6 +175,12 @@ private:
                 createHDF5Dataset();
             }
 
+            // オフセットを初期化
+            if (!timestamp_offset_.has_value()) {
+                timestamp_offset_ = std::get<0>(batch.front());  // 最初のタイムスタンプを基準に
+                RCLCPP_INFO(this->get_logger(), "Timestamp offset set to: %lu", *timestamp_offset_);
+            }
+
             hsize_t current_size[1] = {current_row_ + batch.size()};
             timestamp_dataset_->extend(current_size);
             x_dataset_->extend(current_size);
@@ -190,7 +196,7 @@ private:
             H5::DataSpace memspace(1, dim);
 
             // 各データ型に対応する配列
-            std::vector<int64_t> timestamps;  // int64_t型に変更
+            std::vector<int64_t> timestamps;
             std::vector<uint16_t> x_coords;
             std::vector<uint16_t> y_coords;
             std::vector<uint8_t> polarities;
@@ -201,7 +207,8 @@ private:
             polarities.reserve(batch.size());
 
             for (const auto &event : batch) {
-                timestamps.push_back(static_cast<int64_t>(std::get<0>(event)) / 1000);  // ミリ秒に変換
+                uint64_t original_timestamp = std::get<0>(event);
+                timestamps.push_back(static_cast<int64_t>((original_timestamp - *timestamp_offset_) / 1000));  // オフセットを適用してミリ秒に変換
                 x_coords.push_back(std::get<1>(event));
                 y_coords.push_back(std::get<2>(event));
                 polarities.push_back(std::get<3>(event));
@@ -244,6 +251,8 @@ private:
         current_row_ = 0;
     }
 
+    std::optional<uint64_t> timestamp_offset_;
+    
     std::unique_ptr<H5::DataSet> timestamp_dataset_;
     std::unique_ptr<H5::DataSet> x_dataset_;
     std::unique_ptr<H5::DataSet> y_dataset_;
